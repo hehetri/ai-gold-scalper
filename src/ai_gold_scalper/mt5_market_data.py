@@ -6,8 +6,10 @@ dependency on a compatible Windows machine with: pip install -e ".[mt5]".
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from math import isfinite
+from types import TracebackType
+from typing import Any, Literal, Self
 
 try:
     import MetaTrader5 as _mt5
@@ -46,12 +48,24 @@ class SymbolSnapshot:
 
 
 @dataclass(frozen=True)
+class AccountSnapshot:
+    """Account figures needed by risk checks. Deliberately excludes login/server."""
+
+    currency: str
+    balance: float
+    equity: float
+    margin_free: float
+    trade_allowed: bool
+
+
+@dataclass(frozen=True)
 class Quote:
     symbol: str
     bid: float
     ask: float
     time_msc: int
-    received_at_utc: datetime
+    tick_time_utc: datetime  # broker tick time converted to UTC
+    received_at_utc: datetime  # local clock when the quote was read
 
     @property
     def spread(self) -> float:
@@ -59,11 +73,21 @@ class Quote:
 
 
 class MT5MarketData:
-    """Read-only MT5 connection and market-data access."""
+    """Read-only MT5 connection and market-data access.
 
-    def __init__(self, terminal: Any = None) -> None:
+    MT5 reports tick and bar times in *broker server time* encoded as epoch
+    seconds. ``server_utc_offset_seconds`` (server time minus UTC) must be set
+    from the broker's specification; it is never guessed. With a wrong offset
+    quotes look stale or future-dated and are rejected (fail closed).
+    """
+
+    def __init__(self, terminal: Any = None, *, server_utc_offset_seconds: int = 0) -> None:
         self._terminal = terminal if terminal is not None else _mt5
         self._connected = False
+        self._server_offset = timedelta(seconds=server_utc_offset_seconds)
+
+    def _to_utc(self, server_epoch_seconds: float) -> datetime:
+        return datetime.fromtimestamp(server_epoch_seconds, tz=UTC) - self._server_offset
 
     def connect(self, **initialize_options: Any) -> None:
         if self._terminal is None:
@@ -81,11 +105,16 @@ class MT5MarketData:
             self._terminal.shutdown()
             self._connected = False
 
-    def __enter__(self) -> "MT5MarketData":
+    def __enter__(self) -> Self:
         self.connect()
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         self.disconnect()
 
     def _require_connection(self) -> None:
@@ -127,7 +156,7 @@ class MT5MarketData:
         )
         for field in required_positive:
             value = getattr(info, field, None)
-            if value is None or value <= 0:
+            if value is None or not isfinite(float(value)) or value <= 0:
                 raise MT5DataError(f"Invalid broker symbol metadata: {field}={value!r}")
         return SymbolSnapshot(
             name=symbol,
@@ -152,11 +181,14 @@ class MT5MarketData:
             raise ValueError("max_age_seconds must be positive")
         tick = self._terminal.symbol_info_tick(symbol)
         if tick is None:
-            raise MT5DataError(f"symbol_info_tick({symbol!r}) failed: {self._terminal.last_error()}")
-        if tick.bid <= 0 or tick.ask <= 0 or tick.ask < tick.bid:
+            raise MT5DataError(
+                f"symbol_info_tick({symbol!r}) failed: {self._terminal.last_error()}"
+            )
+        if not (isfinite(tick.bid) and isfinite(tick.ask) and 0 < tick.bid <= tick.ask):
             raise MT5DataError(f"Invalid bid/ask for {symbol}: bid={tick.bid}, ask={tick.ask}")
-        tick_time = datetime.fromtimestamp(int(tick.time), tz=timezone.utc)
-        now = datetime.now(timezone.utc)
+        time_msc = int(getattr(tick, "time_msc", 0) or int(tick.time) * 1000)
+        tick_time = self._to_utc(time_msc / 1000)
+        now = datetime.now(UTC)
         age = (now - tick_time).total_seconds()
         if age < -1 or age > max_age_seconds:
             raise MT5DataError(f"Stale/future quote for {symbol}: age={age:.3f}s")
@@ -164,9 +196,65 @@ class MT5MarketData:
             symbol=symbol,
             bid=float(tick.bid),
             ask=float(tick.ask),
-            time_msc=int(getattr(tick, "time_msc", int(tick.time) * 1000)),
-            received_at_utc=tick_time,
+            time_msc=time_msc,
+            tick_time_utc=tick_time,
+            received_at_utc=now,
         )
+
+    def account_snapshot(self) -> AccountSnapshot:
+        self._require_connection()
+        info = self._terminal.account_info()
+        if info is None:
+            raise MT5DataError(f"account_info() failed: {self._terminal.last_error()}")
+        balance, equity, margin_free = (
+            float(info.balance), float(info.equity), float(info.margin_free)
+        )
+        if not all(isfinite(v) for v in (balance, equity, margin_free)) or equity <= 0:
+            raise MT5DataError("Invalid account balance/equity/free margin")
+        return AccountSnapshot(
+            currency=str(info.currency),
+            balance=balance,
+            equity=equity,
+            margin_free=margin_free,
+            trade_allowed=bool(info.trade_allowed),
+        )
+
+    def _order_type(self, side: Literal["long", "short"]) -> int:
+        if side not in ("long", "short"):
+            raise ValueError("side must be 'long' or 'short'")
+        name = "ORDER_TYPE_BUY" if side == "long" else "ORDER_TYPE_SELL"
+        return int(getattr(self._terminal, name))
+
+    def estimate_stop_loss(
+        self, symbol: str, side: Literal["long", "short"], volume: float,
+        entry_price: float, stop_price: float,
+    ) -> float:
+        """Broker-computed cash loss (positive) at the stop via order_calc_profit.
+
+        A pure calculation in account currency: no order is created or sent.
+        """
+        self._require_connection()
+        profit = self._terminal.order_calc_profit(
+            self._order_type(side), symbol, volume, entry_price, stop_price
+        )
+        if profit is None or not isfinite(float(profit)) or float(profit) >= 0:
+            raise MT5DataError(
+                f"order_calc_profit gave no valid loss for {symbol}: {profit!r} "
+                f"{self._terminal.last_error()}"
+            )
+        return -float(profit)
+
+    def estimate_margin(
+        self, symbol: str, side: Literal["long", "short"], volume: float, price: float
+    ) -> float:
+        """Broker-computed required margin via order_calc_margin (no order is sent)."""
+        self._require_connection()
+        margin = self._terminal.order_calc_margin(self._order_type(side), symbol, volume, price)
+        if margin is None or not isfinite(float(margin)) or float(margin) <= 0:
+            raise MT5DataError(
+                f"order_calc_margin failed for {symbol}: {margin!r} {self._terminal.last_error()}"
+            )
+        return float(margin)
 
     def rates(self, symbol: str, timeframe: int, count: int) -> list[dict[str, Any]]:
         self._require_connection()
@@ -182,7 +270,7 @@ class MT5MarketData:
         closed = rates[:-1]
         return [
             {
-                "time": datetime.fromtimestamp(int(row["time"]), tz=timezone.utc),
+                "time": self._to_utc(int(row["time"])),
                 "open": float(row["open"]),
                 "high": float(row["high"]),
                 "low": float(row["low"]),

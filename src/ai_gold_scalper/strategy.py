@@ -1,16 +1,20 @@
 """M5 context / M1 trigger baseline. This module never sends orders."""
-from enum import Enum
+from enum import StrEnum
+
 import pandas as pd
+
 from .indicators import ema, validate_ohlc
 
 
-class Direction(str, Enum):
+class Direction(StrEnum):
     LONG = "long"
     SHORT = "short"
     FLAT = "flat"
 
 
-def features(frame: pd.DataFrame, fast: int = 9, slow: int = 21, regime: int = 200) -> pd.DataFrame:
+def features(
+    frame: pd.DataFrame, fast: int = 9, slow: int = 21, regime: int = 200
+) -> pd.DataFrame:
     validate_ohlc(frame)
     if not 0 < fast < slow < regime:
         raise ValueError("Require 0 < fast < slow < regime")
@@ -22,6 +26,7 @@ def features(frame: pd.DataFrame, fast: int = 9, slow: int = 21, regime: int = 2
 
 
 def m5_bias(m5: pd.DataFrame) -> Direction:
+    """Directional regime from completed M5 bars only (caller must drop the forming bar)."""
     data = features(m5).dropna()
     if data.empty:
         return Direction.FLAT
@@ -34,6 +39,7 @@ def m5_bias(m5: pd.DataFrame) -> Direction:
 
 
 def m1_trigger(m1: pd.DataFrame, bias: Direction) -> bool:
+    """Pullback-continuation trigger on the last completed M1 bar."""
     if bias is Direction.FLAT:
         return False
     data = features(m1).dropna()
@@ -41,5 +47,11 @@ def m1_trigger(m1: pd.DataFrame, bias: Direction) -> bool:
         return False
     prev, last = data.iloc[-2], data.iloc[-1]  # completed bars only
     if bias is Direction.LONG:
-        return bool(last.close > last.open and last.close > last.ema_fast and prev.close <= prev.ema_fast)
-    return bool(last.close < last.open and last.close < last.ema_fast and prev.close >= prev.ema_fast)
+        return bool(
+            last.close > last.open
+            and last.close > last.ema_fast
+            and prev.close <= prev.ema_fast
+        )
+    return bool(
+        last.close < last.open and last.close < last.ema_fast and prev.close >= prev.ema_fast
+    )
