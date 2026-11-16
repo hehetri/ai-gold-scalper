@@ -1,11 +1,16 @@
+# Example only. Copy to a local file (not committed) and review every value
+# against your broker's real symbol specification. Validated by
+# ai_gold_scalper.config.load_settings; unknown keys are rejected.
 app:
-  mode: backtest # backtest | paper | demo | live (live blocked by default)
+  mode: backtest # backtest | paper | demo. "live" is rejected by the loader.
   timezone: Europe/Dublin
 market:
-  requested_symbol: XAUUSD
+  requested_symbol: XAUUSD # resolved to the broker's real name at runtime
   context_timeframe: M5
   entry_timeframe: M1
   max_quote_age_seconds: 3
+  signal_max_age_seconds: 20 # a closed-M1 signal older than this is expired
+  server_utc_offset_seconds: null # broker server time minus UTC; the MT5 adapter refuses null
 strategy:
   use_closed_candles_only: true
   ema_fast: 9
@@ -14,13 +19,16 @@ strategy:
   rsi_period: 14
   atr_period: 14
 risk:
-  enabled: true
+  enabled: true # cannot be disabled
   max_risk_per_trade_pct: 0.25 # research placeholder, not a recommendation
   max_daily_loss_pct: 1.0
   max_total_drawdown_pct: 3.0
   max_consecutive_losses: 3
   max_trades_per_day: 3
   max_open_positions: 1
+  min_reward_risk: 1.0
+  max_margin_usage_pct: 50
+  max_spread_price: null # price units; set from observed broker spread. null blocks trading
 execution:
   allow_new_orders: false
   allow_live_trading: false
