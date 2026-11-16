@@ -1,0 +1,27 @@
+app:
+  mode: backtest # backtest | paper | demo | live (live blocked by default)
+  timezone: Europe/Dublin
+market:
+  requested_symbol: XAUUSD
+  context_timeframe: M5
+  entry_timeframe: M1
+  max_quote_age_seconds: 3
+strategy:
+  use_closed_candles_only: true
+  ema_fast: 9
+  ema_slow: 21
+  ema_regime: 200
+  rsi_period: 14
+  atr_period: 14
+risk:
+  enabled: true
+  max_risk_per_trade_pct: 0.25 # research placeholder, not a recommendation
+  max_daily_loss_pct: 1.0
+  max_total_drawdown_pct: 3.0
+  max_consecutive_losses: 3
+  max_trades_per_day: 3
+  max_open_positions: 1
+execution:
+  allow_new_orders: false
+  allow_live_trading: false
+  magic_number: 610016
