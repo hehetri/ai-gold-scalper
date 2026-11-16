@@ -7,11 +7,16 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .risk import RiskLimits
+from .risk import (
+    MAX_DAILY_LOSS_PCT_CEILING,
+    MAX_RISK_PER_TRADE_PCT_CEILING,
+    MAX_TOTAL_DRAWDOWN_PCT_CEILING,
+    RiskLimits,
+)
 
 
 class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
 
 class AppSettings(_Strict):
@@ -23,8 +28,8 @@ class MarketSettings(_Strict):
     requested_symbol: str = Field(min_length=1)
     context_timeframe: Literal["M5"] = "M5"
     entry_timeframe: Literal["M1"] = "M1"
-    max_quote_age_seconds: float = Field(gt=0)
-    signal_max_age_seconds: float = Field(gt=0)
+    max_quote_age_seconds: float = Field(gt=0, le=60)
+    signal_max_age_seconds: float = Field(gt=0, le=300)
     # Broker server time minus UTC. Must come from the broker; null blocks MT5 use.
     server_utc_offset_seconds: int | None = None
 
@@ -46,9 +51,9 @@ class StrategySettings(_Strict):
 
 class RiskSettings(_Strict):
     enabled: Literal[True] = True  # the risk gate cannot be switched off
-    max_risk_per_trade_pct: float = Field(gt=0, le=1.0)
-    max_daily_loss_pct: float = Field(gt=0, le=5.0)
-    max_total_drawdown_pct: float = Field(gt=0, le=20.0)
+    max_risk_per_trade_pct: float = Field(gt=0, le=MAX_RISK_PER_TRADE_PCT_CEILING)
+    max_daily_loss_pct: float = Field(gt=0, le=MAX_DAILY_LOSS_PCT_CEILING)
+    max_total_drawdown_pct: float = Field(gt=0, le=MAX_TOTAL_DRAWDOWN_PCT_CEILING)
     max_consecutive_losses: int = Field(ge=1)
     max_trades_per_day: int = Field(ge=1)
     max_open_positions: int = Field(ge=1)

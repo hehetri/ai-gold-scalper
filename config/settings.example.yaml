@@ -10,7 +10,7 @@ market:
   entry_timeframe: M1
   max_quote_age_seconds: 3
   signal_max_age_seconds: 20 # a closed-M1 signal older than this is expired
-  server_utc_offset_seconds: null # broker server time minus UTC; required for MT5
+  server_utc_offset_seconds: null # broker server time minus UTC; the MT5 adapter refuses null
 strategy:
   use_closed_candles_only: true
   ema_fast: 9

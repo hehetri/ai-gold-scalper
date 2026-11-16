@@ -66,6 +66,7 @@ def test_rejects_when_minimum_lot_exceeds_budget():
 
 @pytest.mark.parametrize("overrides", [
     {"equity": math.nan}, {"equity": 0}, {"risk_fraction": 0}, {"risk_fraction": 1},
+    {"risk_fraction": 0.0101}, {"risk_fraction": 0.99},
     {"stop_price": 2000}, {"stop_price": -1}, {"tick_size": 0}, {"tick_value": math.inf},
     {"volume_step": 0}, {"volume_max": 0.001}, {"cost_per_lot": -1}, {"tick_value": None},
 ])
@@ -127,6 +128,9 @@ def test_all_violations_are_reported_together():
     {"max_spread_price": 0.5, "max_daily_loss_pct": 5.0},  # above total drawdown
     {"max_spread_price": 0.5, "max_open_positions": 0},
     {"max_spread_price": 0.5, "max_open_positions": 1.5},
+    {"max_spread_price": 0.5, "max_risk_per_trade_pct": 1.01, "max_daily_loss_pct": 2.0},
+    {"max_spread_price": 0.5, "max_daily_loss_pct": 5.01, "max_total_drawdown_pct": 10.0},
+    {"max_spread_price": 0.5, "max_total_drawdown_pct": 20.01},
     {"max_spread_price": 0.5, "max_margin_usage_pct": 101},
 ])
 def test_incoherent_limits_are_rejected(kwargs):

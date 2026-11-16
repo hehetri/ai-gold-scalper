@@ -18,8 +18,10 @@ Kill switch, daily loss, total drawdown, consecutive losses, trades per day,
 open positions, spread, quote age. Unknown (`None`) or non-finite values
 reject. Equity above the recorded peak is treated as contradictory state.
 
-Limits must stay coherent: per-trade <= daily <= total drawdown. The config
-loader also caps them and refuses `risk.enabled: false`. `max_spread_price` has
+Limits must stay coherent: per-trade <= daily <= total drawdown. `risk.py`
+holds absolute ceilings (1% / 5% / 20%) enforced by `RiskLimits` itself and by
+sizing; raising them needs explicit owner approval. The config loader refuses
+`risk.enabled: false` and non-finite or oversized age limits. `max_spread_price` has
 no default; it must be set from the broker's observed spread.
 
 ## Writing a gate

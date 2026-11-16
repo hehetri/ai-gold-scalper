@@ -234,6 +234,51 @@ def test_stop_exactly_on_stops_level_is_accepted():
     assert not review(inside, ctx).approved
 
 
+def test_loss_is_measured_from_the_executable_quote_not_an_optimistic_entry():
+    # Budget 25. Entry 0.50 inside the quote makes the paper loss 25.00, but a
+    # long fills at the ask (2300.20) and a short at the bid (2300.00): 37.50.
+    demo = replace(CTX, mode="demo", allow_new_orders=True, required_margin=230.0,
+                   free_margin=9_500.0)
+    long = replace(PROPOSAL, entry_price=2299.70, stop_price=2298.70, target_price=2301.20,
+                   volume=0.25)
+    short = replace(PROPOSAL, side="short", entry_price=2300.50, stop_price=2301.50,
+                    target_price=2299.00, volume=0.25)
+    for proposal in (long, short):
+        assert vetoing(review(proposal)) == {"risk_analyst", "execution_validator"}
+        for broker in (25.0, 37.5):
+            decision = review(proposal, replace(demo, broker_loss_estimate=broker))
+            assert vetoing(decision) == {"risk_analyst", "execution_validator"}
+        # The same geometry is fine once volume fits the real 1.50 distance.
+        assert review(replace(proposal, volume=0.16)).approved
+
+
+def test_duck_typed_limits_and_malformed_verdicts_are_vetoed():
+    class FakeLimits:
+        def __getattr__(self, name):
+            return 99.0
+
+    decision = review(ctx=replace(CTX, limits=FakeLimits()))
+    assert vetoing(decision) == {"risk_analyst", "execution_validator"}
+
+    class ReturnsNone:
+        name = "returns_none"
+
+        def review(self, proposal, ctx):
+            return None
+
+    decision = DualAgentReview([ReturnsNone()]).review(PROPOSAL, CTX)
+    assert not decision.approved
+    assert "Agent error" in decision.verdicts[2].reasons[0]
+
+    class Evil(str):
+        __hash__ = str.__hash__
+
+        def __eq__(self, other):
+            return True
+
+    assert not review(ctx=replace(CTX, mode=Evil("live"))).approved
+
+
 @pytest.mark.parametrize("changes", [
     {"point": 0.0}, {"point": -0.01}, {"point": math.inf},
     {"trade_freeze_level": math.nan}, {"trade_stops_level": -5},

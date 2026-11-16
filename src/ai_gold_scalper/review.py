@@ -45,7 +45,16 @@ _MAX_BROKER_LOSS_TOLERANCE = 0.10
 
 
 def _needs_broker_data(mode: object) -> bool:
-    return mode not in _OFFLINE_MODES
+    return not (type(mode) is str and mode in _OFFLINE_MODES)
+
+
+def _context_is_genuine(ctx: ReviewContext) -> bool:
+    """Exact types only: duck-typed limits/state/symbol could bypass validation."""
+    return (
+        type(ctx.limits) is RiskLimits
+        and type(ctx.state) is RiskState
+        and type(ctx.symbol) is SymbolSnapshot
+    )
 
 
 def _distance(a: float, b: float) -> Decimal:
@@ -82,7 +91,9 @@ class ReviewContext:
     signal_max_age_seconds: float
     allow_new_orders: bool = False
     cost_per_lot: float = 0.0
-    broker_loss_estimate: float | None = None  # positive cash loss from order_calc_profit
+    # Positive cash loss from order_calc_profit, computed from the executable
+    # quote (ask for a long, bid for a short) to the stop.
+    broker_loss_estimate: float | None = None
     required_margin: float | None = None  # from order_calc_margin
     free_margin: float | None = None
     broker_loss_tolerance: float = 0.05
@@ -162,6 +173,9 @@ class RiskAnalystAgent:
 
     def review(self, proposal: TradeProposal, ctx: ReviewContext) -> AgentVerdict:
         c = _Checklist()
+        if not c.require("context_types", _context_is_genuine(ctx),
+                         "Limits, state or symbol are not the validated types"):
+            return c.verdict(self.name)
         limits, state = ctx.limits, ctx.state
 
         gate_reasons = risk_gate_violations(limits, state)
@@ -171,9 +185,10 @@ class RiskAnalystAgent:
         prices_ok = c.require(
             "inputs_finite",
             _finite(proposal.entry_price, proposal.stop_price, proposal.target_price,
-                    proposal.volume, ctx.cost_per_lot)
-            and proposal.volume > 0,
-            "Proposal prices/volume must be finite and volume positive",
+                    proposal.volume, ctx.cost_per_lot, ctx.bid, ctx.ask)
+            and proposal.volume > 0
+            and proposal.side in ("long", "short"),
+            "Proposal prices/volume and quote must be finite, volume positive, side valid",
         )
         if not prices_ok or not _finite(state.current_equity) or state.current_equity <= 0:
             return c.verdict(self.name)
@@ -186,11 +201,17 @@ class RiskAnalystAgent:
             f"Reward/risk is below the minimum {limits.min_reward_risk}",
         )
 
+        # Risk is measured from the worse of the proposed entry and the price the
+        # order can actually fill at now (ask for a long, bid for a short).
+        fill_price = (
+            max(proposal.entry_price, ctx.ask) if proposal.side == "long"
+            else min(proposal.entry_price, ctx.bid)
+        )
         try:
             sizing = calculate_position_size(SizingSpec(
                 equity=state.current_equity,
                 risk_fraction=limits.max_risk_per_trade_pct / 100,
-                entry_price=proposal.entry_price,
+                entry_price=fill_price,
                 stop_price=proposal.stop_price,
                 tick_size=ctx.symbol.trade_tick_size,
                 tick_value=ctx.symbol.trade_tick_value,
@@ -257,11 +278,14 @@ class ExecutionValidatorAgent:
 
     def review(self, proposal: TradeProposal, ctx: ReviewContext) -> AgentVerdict:
         c = _Checklist()
+        if not c.require("context_types", _context_is_genuine(ctx),
+                         "Limits, state or symbol are not the validated types"):
+            return c.verdict(self.name)
         sym, limits = ctx.symbol, ctx.limits
 
         c.require(
             "mode",
-            isinstance(ctx.mode, str) and ctx.mode in _APPROVABLE_MODES,
+            type(ctx.mode) is str and ctx.mode in _APPROVABLE_MODES,
             f"Mode {ctx.mode!r} is not approved (live trading is not approved in this system)",
         )
         if _needs_broker_data(ctx.mode):
@@ -391,7 +415,12 @@ class ExecutionValidatorAgent:
             "Equity or tick metadata is missing/invalid",
         )
         if metadata_ok:
-            ticks = abs(proposal.entry_price - proposal.stop_price) / sym.trade_tick_size
+            # Worst executable fill, not the (possibly optimistic) proposed entry.
+            worst_fill = (
+                max(proposal.entry_price, reference) if proposal.side == "long"
+                else min(proposal.entry_price, reference)
+            )
+            ticks = abs(worst_fill - proposal.stop_price) / sym.trade_tick_size
             local_loss = (ticks * sym.trade_tick_value + ctx.cost_per_lot) * proposal.volume
             worst_loss = local_loss
             broker = ctx.broker_loss_estimate
@@ -440,6 +469,8 @@ class DualAgentReview:
         for agent in self._agents:
             try:
                 verdict = agent.review(proposal, ctx)
+                if type(verdict) is not AgentVerdict:
+                    raise TypeError("agent did not return an AgentVerdict")
             except Exception as exc:  # noqa: BLE001 - any agent failure is a veto
                 verdict = AgentVerdict(
                     agent.name, False, (f"Agent error: {type(exc).__name__}: {exc}",), ()

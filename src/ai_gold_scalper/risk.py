@@ -9,6 +9,12 @@ from dataclasses import dataclass, fields
 from decimal import ROUND_DOWN, Decimal
 from math import isfinite
 
+# Absolute ceilings (percent of equity). Configuration may be stricter, never looser.
+# Raising any of these requires explicit owner approval.
+MAX_RISK_PER_TRADE_PCT_CEILING = 1.0
+MAX_DAILY_LOSS_PCT_CEILING = 5.0
+MAX_TOTAL_DRAWDOWN_PCT_CEILING = 20.0
+
 
 class RiskRejected(ValueError):
     """A proposed trade violates configured risk constraints."""
@@ -83,8 +89,11 @@ def calculate_position_size(spec: SizingSpec) -> SizingResult:
     """
     if not all(_is_finite_number(getattr(spec, f.name)) for f in fields(spec)):
         raise RiskRejected("All sizing inputs must be finite numbers")
-    if spec.equity <= 0 or not 0 < spec.risk_fraction < 1:
-        raise RiskRejected("Equity must be positive and risk_fraction between 0 and 1")
+    if spec.equity <= 0 or not 0 < spec.risk_fraction <= MAX_RISK_PER_TRADE_PCT_CEILING / 100:
+        raise RiskRejected(
+            "Equity must be positive and risk_fraction within "
+            f"(0, {MAX_RISK_PER_TRADE_PCT_CEILING / 100}]"
+        )
     if spec.volume_min <= 0 or spec.volume_step <= 0 or spec.volume_max < spec.volume_min:
         raise RiskRejected("Invalid broker volume constraints")
     if spec.cost_per_lot < 0:
@@ -126,8 +135,14 @@ class RiskLimits:
             raise ValueError("All risk limits must be finite numbers")
         if not 0 < self.max_risk_per_trade_pct <= self.max_daily_loss_pct:
             raise ValueError("Require 0 < max_risk_per_trade_pct <= max_daily_loss_pct")
-        if not self.max_daily_loss_pct <= self.max_total_drawdown_pct < 100:
-            raise ValueError("Require max_daily_loss_pct <= max_total_drawdown_pct < 100")
+        if not self.max_daily_loss_pct <= self.max_total_drawdown_pct:
+            raise ValueError("Require max_daily_loss_pct <= max_total_drawdown_pct")
+        if (
+            self.max_risk_per_trade_pct > MAX_RISK_PER_TRADE_PCT_CEILING
+            or self.max_daily_loss_pct > MAX_DAILY_LOSS_PCT_CEILING
+            or self.max_total_drawdown_pct > MAX_TOTAL_DRAWDOWN_PCT_CEILING
+        ):
+            raise ValueError("Risk limits exceed the absolute ceilings in risk.py")
         counts = (self.max_consecutive_losses, self.max_trades_per_day, self.max_open_positions)
         if not all(isinstance(v, int) and not isinstance(v, bool) and v >= 1 for v in counts):
             raise ValueError("Count limits must be integers of at least 1")

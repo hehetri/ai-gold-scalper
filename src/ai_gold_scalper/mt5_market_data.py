@@ -81,7 +81,9 @@ class MT5MarketData:
     quotes look stale or future-dated and are rejected (fail closed).
     """
 
-    def __init__(self, terminal: Any = None, *, server_utc_offset_seconds: int = 0) -> None:
+    def __init__(self, terminal: Any = None, *, server_utc_offset_seconds: int) -> None:
+        if type(server_utc_offset_seconds) is not int:
+            raise ValueError("server_utc_offset_seconds must be an integer from the broker spec")
         self._terminal = terminal if terminal is not None else _mt5
         self._connected = False
         self._server_offset = timedelta(seconds=server_utc_offset_seconds)
@@ -177,8 +179,8 @@ class MT5MarketData:
 
     def quote(self, symbol: str, max_age_seconds: float = 3.0) -> Quote:
         self._require_connection()
-        if max_age_seconds <= 0:
-            raise ValueError("max_age_seconds must be positive")
+        if not isfinite(max_age_seconds) or max_age_seconds <= 0:
+            raise ValueError("max_age_seconds must be finite and positive")
         tick = self._terminal.symbol_info_tick(symbol)
         if tick is None:
             raise MT5DataError(

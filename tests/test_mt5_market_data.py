@@ -78,14 +78,14 @@ class FakeTerminal:
 
 
 def test_requires_connection():
-    adapter = MT5MarketData(FakeTerminal())
+    adapter = MT5MarketData(FakeTerminal(), server_utc_offset_seconds=0)
     with pytest.raises(MT5ConnectionError):
         adapter.resolve_symbol("XAUUSD")
 
 
 def test_resolves_broker_suffix_and_selects_symbol():
     terminal = FakeTerminal()
-    adapter = MT5MarketData(terminal)
+    adapter = MT5MarketData(terminal, server_utc_offset_seconds=0)
     adapter.connect()
     assert adapter.resolve_symbol("XAUUSD") == "XAUUSD.a"
     assert terminal.selected == [("XAUUSD.a", True)]
@@ -93,7 +93,7 @@ def test_resolves_broker_suffix_and_selects_symbol():
 
 
 def test_symbol_snapshot_reads_broker_contract_properties():
-    adapter = MT5MarketData(FakeTerminal())
+    adapter = MT5MarketData(FakeTerminal(), server_utc_offset_seconds=0)
     adapter.connect()
     snapshot = adapter.symbol_snapshot("XAUUSD.a")
     assert snapshot.digits == 2
@@ -103,7 +103,7 @@ def test_symbol_snapshot_reads_broker_contract_properties():
 
 
 def test_quote_returns_bid_ask_and_spread():
-    adapter = MT5MarketData(FakeTerminal())
+    adapter = MT5MarketData(FakeTerminal(), server_utc_offset_seconds=0)
     adapter.connect()
     quote = adapter.quote("XAUUSD.a")
     assert quote.ask > quote.bid
@@ -112,7 +112,7 @@ def test_quote_returns_bid_ask_and_spread():
 
 
 def test_rates_exclude_forming_candle():
-    adapter = MT5MarketData(FakeTerminal())
+    adapter = MT5MarketData(FakeTerminal(), server_utc_offset_seconds=0)
     adapter.connect()
     bars = adapter.rates("XAUUSD.a", FakeTerminal.TIMEFRAME_M1, 3)
     assert len(bars) == 2
@@ -121,11 +121,12 @@ def test_rates_exclude_forming_candle():
 
 
 def test_disconnect_is_safe_when_not_connected():
-    adapter = MT5MarketData(FakeTerminal())
+    adapter = MT5MarketData(FakeTerminal(), server_utc_offset_seconds=0)
     adapter.disconnect()
 
 
 def connected(terminal=None, **kwargs):
+    kwargs.setdefault("server_utc_offset_seconds", 0)
     adapter = MT5MarketData(terminal or FakeTerminal(), **kwargs)
     adapter.connect()
     return adapter
@@ -136,7 +137,7 @@ def test_missing_package_fails_closed(monkeypatch):
 
     monkeypatch.setattr(module, "_mt5", None)
     with pytest.raises(module.MT5UnavailableError):
-        MT5MarketData().connect()
+        MT5MarketData(server_utc_offset_seconds=0).connect()
 
 
 def test_quote_honours_broker_server_offset():
@@ -202,3 +203,17 @@ def test_estimate_margin():
 
 def test_adapter_exposes_no_order_submission():
     assert not [name for name in dir(MT5MarketData) if "send" in name or "order_check" in name]
+
+
+@pytest.mark.parametrize("max_age", [math.nan, math.inf, 0, -1])
+def test_quote_rejects_non_finite_or_non_positive_max_age(max_age):
+    with pytest.raises(ValueError):
+        connected().quote("XAUUSD.a", max_age_seconds=max_age)
+
+
+def test_server_offset_is_mandatory_and_must_be_an_integer():
+    with pytest.raises(TypeError):
+        MT5MarketData(FakeTerminal())
+    for bad in (None, 7200.0, True, "7200"):
+        with pytest.raises(ValueError):
+            MT5MarketData(FakeTerminal(), server_utc_offset_seconds=bad)

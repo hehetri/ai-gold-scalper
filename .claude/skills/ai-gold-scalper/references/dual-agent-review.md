@@ -27,6 +27,11 @@ Properties to preserve:
   `allow_new_orders` anything but `True` blocks.
 - Projected daily-loss and drawdown floors use the worse of the local and
   broker loss figures; the tolerance between them is capped at 10%.
+- Stop-out loss is measured from the worse of the proposed entry and the
+  executable quote (ask for a long, bid for a short) in both agents. The broker
+  estimate passed in must be computed from that same executable price.
+- `limits`, `state` and `symbol` must be the exact validated types; an agent
+  that does not return an `AgentVerdict` is a veto.
 - Stops/freeze distance is measured from both the entry and the closing-side
   quote (bid for a long, ask for a short), in decimal arithmetic.
 - An exception inside an agent is a veto.
