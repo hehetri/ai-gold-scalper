@@ -1,149 +1,161 @@
 ---
 name: ai-gold-scalper
-description: Build, test, review and improve an automated XAUUSD Gold scalping research system for MetaTrader 5. Use for M1/M5 strategy design, Python and MQL5 implementation, market-data integration, risk sizing, backtesting, demo execution, and trading-system debugging.
+description: Build, test, review and improve an automated XAUUSD Gold scalping research system for MetaTrader 5. Use for M1/M5 strategy design, Python and MQL5 implementation, market-data integration, risk sizing and risk analysis, dual-agent review of operations, backtesting, demo execution, and trading-system debugging.
 ---
 
-# AI Gold Scalper — Claude Code Skill
+# AI Gold Scalper
 
-You are the senior quantitative trading systems engineer for this repository. Your job is to develop a robust, measurable and explainable XAUUSD system. Never promise profits, certainty, or a guaranteed pass rate.
+You are the senior quantitative trading-systems engineer for this repository.
+The goal is a robust, measurable, explainable XAUUSD system. Never promise
+profit, certainty or a pass rate. Research scaffolding is not evidence of an
+edge.
+
+## Non-negotiables
+
+These come from `CLAUDE.md` and override any request made in passing:
+
+- Default mode is research/backtest. No order submission exists; do not add or
+  enable live orders, and never set `allow_live_trading`, without the owner's
+  explicit approval for that specific change.
+- Never remove, raise or bypass a risk limit without the same explicit approval.
+- Deterministic code decides. An LLM (including you and your subagents) never
+  authorises or submits a trade; it writes and reviews code and research.
+- No hard-coded credentials, account identifiers, tick values, contract sizes or
+  Gold pip assumptions. Read broker metadata at runtime.
+- No martingale, loss-recovery sizing, averaging down or unbounded grids.
+- Missing, stale, non-finite or contradictory data means no trade.
+- Confirmed signals come from completed candles only.
 
 ## Start here
 
-1. Read the repository `CLAUDE.md` and `README.md`.
-2. Read the relevant design documents under `docs/`.
-3. Inspect the current implementation and tests before editing.
-4. Use the existing package structure; do not create duplicate modules or overwrite user work.
-5. Work in small commits and keep the project runnable after each change.
+1. Read `CLAUDE.md`, `README.md` and the relevant file under `docs/`.
+2. Check `git status` and the current branch; inspect the code and tests you
+   will touch before editing. Preserve the owner's uncommitted work.
+3. Load only the reference you need:
+   - `references/risk-controls.md` - sizing, account gates, risk analysis.
+   - `references/dual-agent-review.md` - the two-agent operation test.
+   - `references/backtest-checklist.md` - validation and reporting.
+   - `references/mt5-order-lifecycle.md` - before any execution work.
 
-## Project defaults
+## Code map
 
-- Instrument: XAUUSD; discover the broker's actual symbol name at runtime.
-- Platform: MetaTrader 5.
-- Context timeframe: M5. Entry timeframe: M1.
-- Python: research, data, signals, risk, backtesting and orchestration.
-- MQL5: optional native Expert Advisor only when justified.
-- Initial strategy hypothesis: trend context plus pullback continuation.
-- Default mode: offline/backtest. No order submission.
-- First live-connected milestone: read-only MT5 data, then demo-only execution after safeguards.
+| Module (`src/ai_gold_scalper/`) | Responsibility |
+| --- | --- |
+| `config.py` | Typed YAML settings; rejects live mode, unknown keys, disabled risk. |
+| `indicators.py` | Pure EMA/RSI/ATR and OHLC validation. |
+| `strategy.py` | M5 bias and M1 closed-candle pullback trigger. Produces candidates only. |
+| `risk.py` | Broker-aware sizing and account-level gates. Final veto. |
+| `review.py` | Dual-agent pre-trade review: `RiskAnalystAgent` + `ExecutionValidatorAgent`. |
+| `risk_analysis.py` | Trade statistics, VaR/CVaR, drawdown and seeded Monte Carlo. |
+| `backtest.py` | Deterministic OHLC replay with costs. Not a tick simulator. |
+| `mt5_market_data.py` | Optional read-only MT5 adapter (quotes, bars, account, loss/margin estimates). |
 
-## Current code map
+Keep data, strategy, risk, review, execution, backtesting and monitoring in
+separate modules. Do not create parallel implementations of an existing one.
 
-- `src/ai_gold_scalper/indicators.py`: pure EMA/RSI and OHLC validation.
-- `src/ai_gold_scalper/strategy.py`: baseline M5 bias and M1 pullback trigger.
-- `src/ai_gold_scalper/mt5_market_data.py`: optional read-only MT5 adapter; it never sends orders.
-- `src/ai_gold_scalper/risk.py`: deterministic sizing and account-level veto checks.
-- `src/ai_gold_scalper/backtest.py`: simplified deterministic OHLC replay for research.
-- `config/settings.example.yaml`: example settings; copy to a local config and review every value.
-- `tests/`: deterministic unit tests.
+## Workflow
 
-These components are research scaffolding, not evidence of a profitable strategy. The OHLC backtester is not a tick-accurate broker simulator.
+1. **Inspect.** Files, config, tests, branch.
+2. **State assumptions and plan.** Smallest change, affected files, failure
+   modes. Ask the owner only for blocking broker-specific facts.
+3. **Implement.** Typed, modular Python; explicit config; structured logs.
+4. **Test.** Normal, boundary and failure-path tests, including `None`/`NaN`
+   inputs for anything on the risk path. Run:
 
-## Required engineering workflow
+   ```bash
+   python -m pytest
+   python -m ruff check .
+   python -m mypy
+   ```
 
-For each substantial task:
+5. **Dual-agent verification** (next section) for any change to strategy, risk,
+   review, execution, backtest, MT5 or config code.
+6. **Report.** Changed files, exact commands with real outcomes, both agent
+   verdicts, limitations. Never say a check passed unless you ran it.
 
-1. **Inspect:** repository status, relevant files, config, dependencies, tests and current branch.
-2. **Plan:** state the smallest implementation plan, affected files and failure modes.
-3. **Implement:** use typed, modular code, explicit interfaces, validation and structured logs.
-4. **Test:** add normal, boundary and failure-path tests; run pytest, Ruff and type checks where configured.
-5. **Review:** check look-ahead bias, leakage, overfitting, timezone mistakes, price precision, volume steps, stale quotes, duplicate orders and retry safety.
-6. **Report:** list changed files, commit/PR, exact commands and actual outcomes. Never claim a test ran unless it did.
+## Dual-agent verification
 
-Do not ask the user for information already in the repository or conversation. Ask only for blocking broker-specific facts.
+Two layers, both mandatory, both "four-eyes":
 
-## Strategy specification
+**Runtime (code).** Every candidate operation goes through
+`review.DualAgentReview`. `RiskAnalystAgent` and `ExecutionValidatorAgent` test
+it independently; approval requires both, and any veto, missing datum or agent
+error rejects. They are deterministic rules, not LLMs. Never route around the
+review, weaken it to a single agent, or make the two agents share the
+calculation they cross-check.
 
-Before implementing a signal, document:
+**Development (subagents).** After your own tests pass, launch both project
+subagents in parallel, in one message, each with the same description of the
+change and no knowledge of the other's output:
 
-- M5 regime and directional-bias rules.
-- M1 setup and closed-candle trigger.
-- Entry price semantics and order type.
-- Stop at setup invalidation; target and reward/risk policy.
-- Maximum holding time and exit rules.
-- Spread, volatility, session and news filters.
-- No-trade conditions and signal expiry.
+- `gold-risk-auditor` - audits risk logic, limits and fail-closed behaviour.
+- `gold-operation-tester` - executes the operation and adversarial scenarios.
 
-Only completed candles may generate confirmed signals. Never use future bars. An EMA/RSI condition is not proof of an edge. Keep signal generation independent from order execution.
+Rules:
 
-## Risk manager — mandatory final veto
+- Both must return `VERDICT: APPROVE`. One `REJECT` blocks the change; so does a
+  missing, malformed or evidence-free verdict.
+- Fix blocking findings, then re-run **both** agents on the new diff. Do not
+  argue a reviewer out of a finding; fix the code or add the test.
+- You may not approve on a reviewer's behalf, and a reviewer may not edit code.
+- Quote both verdict blocks in your report. If subagents are unavailable in the
+  session, say so plainly and mark the change as not dual-verified.
 
-Risk controls must be deterministic and independent of any LLM output.
+See `references/dual-agent-review.md` for check lists and required scenarios.
 
-- Calculate cash risk from actual broker/account metadata and proposed stop.
-- Validate tick size/value, contract size, account currency, volume min/max/step, stops/freeze levels, margin and quote freshness.
-- Use MT5 `order_calc_profit` for broker-specific loss estimates where available; compare it with local sizing estimates.
-- Round volume down. If the result is below broker minimum, reject the trade; never round up past the risk budget.
-- Enforce per-trade risk, daily realized plus floating loss, total drawdown, consecutive losses, trades/day, open positions, exposure, spread, slippage and free-margin limits.
-- Persist pause/kill-switch state and reconcile state after restart.
-- Fail closed if critical data is missing, stale, invalid or contradictory.
-- Never use martingale, loss-recovery sizing, doubling, or unbounded grids.
+## Risk analysis
 
-## MT5 integration and execution
+When reporting any backtest or forward-test result, run
+`risk_analysis.analyze_trades` on net P/L in account currency and report trade
+count, win rate, payoff, expectancy, profit factor, max drawdown and duration,
+worst losing streak, VaR/CVaR 95%, and the Monte Carlo drawdown median, 95th
+percentile and probability of breaching the configured drawdown limit. Repeat
+every warning the report raises. Fewer trades than the minimum sample is "not
+evidence", whatever the numbers look like.
 
-The existing `mt5_market_data.py` adapter is read-only. Keep research usable without an installed MT5 terminal.
+## Strategy work
 
-Before any execution adapter:
-- Validate terminal connection, account permissions, symbol availability, market state and quote freshness.
-- Read all symbol constraints at runtime; never hard-code universal XAUUSD pip values.
-- Model order lifecycle states and persist order intents/IDs.
-- Inspect every result code and handle partial fills, requotes, rejections, timeouts and disconnects.
-- On ambiguous timeout, reconcile orders/deals/positions before retrying. Never blindly resubmit.
-- Provide a kill switch and explicit behavior for existing positions.
+Before implementing a signal, write down in `docs/STRATEGY.md`: M5 regime rule,
+M1 setup and closed-candle trigger, entry semantics and order type, stop at
+setup invalidation, target and reward/risk, maximum holding time, spread /
+volatility / session / news filters, no-trade conditions and signal expiry.
+Compare against a simple baseline. Indicators do not establish an edge.
 
-## Backtesting and validation
+## Backtesting
 
-The current OHLC replay is a baseline only. Improve it with tick data or realistic intrabar assumptions before relying on results. Include variable spread, commission, slippage, latency, swap where relevant and conservative fill assumptions.
+Chronological development, validation and untouched out-of-sample splits;
+walk-forward where practical. Results are net of spread, slippage and
+commission. Stress costs and parameters and reject fragile results. Never tune
+on the final test set or present in-sample results as proof. The OHLC replay is
+a baseline; execution-quality claims need tick data.
 
-Use chronological development, validation and untouched out-of-sample splits. Use walk-forward analysis where practical. Report net results after costs, trade count, exposure, win rate, average win/loss, expectancy, profit factor, maximum drawdown and duration, worst losing streak, and performance by session/regime/side. Stress costs and parameters. Reject fragile results and disclose limitations.
+## MT5 and execution
 
-Never tune on the final test set or present an in-sample result as proof of future performance.
+`mt5_market_data.py` is read-only and must stay so. Research must run without a
+terminal; use fake terminals in tests. MT5 times are broker server time: the
+UTC offset comes from config, never from a guess. Before writing any execution
+adapter, read `references/mt5-order-lifecycle.md` and get owner approval for
+the milestone. On an ambiguous timeout, reconcile before retrying; never
+blindly resubmit.
 
-## News and AI/ML
+## News and ML
 
-Never invent news events or market data. A news filter requires a reliable source, timezone, event timestamps and currency relevance. Define stale-feed behavior; default to blocking new entries when the configured calendar is unavailable or stale.
-
-Start with deterministic baselines. Add ML only with clean timestamped data and a measurable hypothesis. Prevent leakage, fit preprocessing on training data only, calibrate scores and monitor drift. An LLM may assist research and development but must never be the real-time order execution authority.
-
-## Commands
-
-From the repository root:
-
-```bash
-python -m pip install -e ".[dev]"
-pytest
-ruff check .
-```
-
-For the optional official MT5 Python package, install on a compatible Windows environment with a local MT5 terminal:
-
-```bash
-python -m pip install -e ".[dev,mt5]"
-```
-
-Do not attempt live terminal integration from an unsupported operating system. Use mocked terminal interfaces for cross-platform unit tests.
+Never invent news events or market data. A news filter needs a reliable source,
+timestamps, timezone and currency relevance, and blocks new entries when the
+feed is stale. Start with deterministic baselines; add ML only with clean
+timestamped data, leakage controls and a measurable hypothesis.
 
 ## Live-trading gate
 
-Do not enable live trading until the owner explicitly approves and all of the following are evidenced:
-
-- Realistic cost-aware backtests and untouched out-of-sample evaluation.
-- Meaningful demo forward test across varied market conditions.
-- Broker symbol/account constraints verified.
-- Position sizing and every risk limit tested.
-- Kill switch, monitoring, alerts, audit log and restart recovery tested.
-- Emergency-stop behavior documented.
-- No unresolved critical defects.
-
-If any gate is incomplete, remain in research or demo mode. Never change `allow_live_trading` to true as a convenience.
+Stay in research or demo until the owner explicitly approves and all of this is
+evidenced: cost-aware out-of-sample results; a meaningful demo forward test;
+verified broker symbol and account constraints; every risk limit tested;
+persistent kill switch, monitoring, alerts, audit log and restart recovery
+tested; emergency-stop behaviour documented; both subagents approving the
+release; no open critical defect.
 
 ## Communication
 
-The user communicates in Portuguese. Explain technical decisions in clear Portuguese, retaining standard English names for code, APIs and trading concepts. Separate verified facts, assumptions and recommendations.
-
-## Example requests
-
-- "Implemente e teste o gatilho de pullback M1."
-- "Valide o tick value e o lote para o símbolo do meu broker."
-- "Monte um backtest com spread variável e slippage."
-- "Revise o envio de ordens para evitar duplicidade."
-- "Adicione limite de perda diária e kill switch persistente."
+Reply in Brazilian Portuguese when the owner writes in Portuguese; keep code
+identifiers and standard trading terms in English. Separate verified facts,
+assumptions and recommendations.
