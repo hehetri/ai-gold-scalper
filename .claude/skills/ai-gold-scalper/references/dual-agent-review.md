@@ -14,11 +14,21 @@ if not decision.approved:
 | Agent | Tests |
 | --- | --- |
 | `RiskAnalystAgent` | account gates (kill switch, daily loss, drawdown, streak, trade count, open positions, spread, quote age); reward/risk; volume within the risk-budget maximum from `calculate_position_size`; equity after a stop-out still above the daily and drawdown floors; margin usage |
-| `ExecutionValidatorAgent` | mode (`live` always vetoed; `demo` needs `allow_new_orders`); symbol match; finite numbers; timezone-aware timestamps; bid/ask sanity, spread and quote age recomputed from the raw quote; risk-state spread consistent with the quote; signal bar closed and not expired; stop/entry/target geometry; entry near the executable quote; prices on the tick grid; volume on the step grid and within min/max; broker stops/freeze distance; its own stop-out loss calculation, cross-checked against the broker's `order_calc_profit` figure |
+| `ExecutionValidatorAgent` | mode allow-list (`live` and unknown modes vetoed; `demo` needs `allow_new_orders`); symbol metadata sanity; symbol match; finite numbers; timezone-aware timestamps; bid/ask sanity, spread and quote age recomputed from the raw quote; risk-state spread consistent with the quote; signal bar closed and not expired; stop/entry/target geometry; entry near the executable quote; prices on the tick grid; volume on the step grid and within min/max; broker stops/freeze distance; its own stop-out loss calculation, cross-checked against the broker's `order_calc_profit` figure |
 
 Properties to preserve:
 
-- Approval is unanimous and needs at least two distinctly named agents.
+- Approval is unanimous. The two core agents are created inside
+  `DualAgentReview` and cannot be replaced, renamed away or removed;
+  `extra_agents` can only add vetoes.
+- Modes are allow-listed (`backtest`, `paper`, `demo`). Any other value is
+  vetoed and treated as broker-connected, so it also needs broker data.
+- Flags must be real booleans: `paused` anything but `False` blocks,
+  `allow_new_orders` anything but `True` blocks.
+- Projected daily-loss and drawdown floors use the worse of the local and
+  broker loss figures; the tolerance between them is capped at 10%.
+- Stops/freeze distance is measured from both the entry and the closing-side
+  quote (bid for a long, ask for a short), in decimal arithmetic.
 - An exception inside an agent is a veto.
 - A verdict marked approved that still carries reasons does not approve.
 - The validator does not call the sizing function the analyst uses.

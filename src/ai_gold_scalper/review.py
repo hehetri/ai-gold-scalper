@@ -19,6 +19,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from decimal import Decimal
 from math import isfinite
 from typing import Literal, Protocol
 
@@ -37,7 +38,19 @@ logger = logging.getLogger(__name__)
 
 Side = Literal["long", "short"]
 Mode = Literal["backtest", "paper", "demo", "live"]
-_BROKER_CONNECTED_MODES = ("demo", "live")
+# Allow-lists: anything not named here gets the strictest treatment.
+_APPROVABLE_MODES = ("backtest", "paper", "demo")
+_OFFLINE_MODES = ("backtest", "paper")
+_MAX_BROKER_LOSS_TOLERANCE = 0.10
+
+
+def _needs_broker_data(mode: object) -> bool:
+    return mode not in _OFFLINE_MODES
+
+
+def _distance(a: float, b: float) -> Decimal:
+    """Exact decimal a - b, so on-the-limit prices do not fail on float noise."""
+    return Decimal(str(a)) - Decimal(str(b))
 
 
 @dataclass(frozen=True)
@@ -196,6 +209,17 @@ class RiskAnalystAgent:
             f"Volume {proposal.volume} exceeds the risk-budget maximum {sizing.volume}",
         )
         loss_if_stopped = sizing.estimated_cash_risk / sizing.volume * proposal.volume
+        broker = ctx.broker_loss_estimate
+        if broker is not None:
+            # Project with the worse of the local and broker figures.
+            if c.require(
+                "broker_loss",
+                _finite(broker) and broker > 0,
+                "Broker loss estimate is invalid",
+            ):
+                loss_if_stopped = max(
+                    loss_if_stopped, broker + ctx.cost_per_lot * proposal.volume
+                )
         equity_after = state.current_equity - loss_if_stopped
         if _finite(state.day_start_equity, state.peak_equity):
             c.require(
@@ -210,7 +234,7 @@ class RiskAnalystAgent:
             )
 
         required, free = ctx.required_margin, ctx.free_margin
-        if ctx.mode in _BROKER_CONNECTED_MODES or required is not None or free is not None:
+        if _needs_broker_data(ctx.mode) or required is not None or free is not None:
             c.require(
                 "margin",
                 required is not None
@@ -235,9 +259,24 @@ class ExecutionValidatorAgent:
         c = _Checklist()
         sym, limits = ctx.symbol, ctx.limits
 
-        c.require("mode", ctx.mode != "live", "Live trading is not approved in this system")
-        if ctx.mode in _BROKER_CONNECTED_MODES:
-            c.require("mode", ctx.allow_new_orders, "allow_new_orders is disabled")
+        c.require(
+            "mode",
+            isinstance(ctx.mode, str) and ctx.mode in _APPROVABLE_MODES,
+            f"Mode {ctx.mode!r} is not approved (live trading is not approved in this system)",
+        )
+        if _needs_broker_data(ctx.mode):
+            c.require("mode", ctx.allow_new_orders is True, "allow_new_orders is disabled")
+        symbol_ok = c.require(
+            "symbol_metadata",
+            _finite(sym.point, sym.trade_tick_size, sym.trade_tick_value, sym.volume_min,
+                    sym.volume_max, sym.volume_step, sym.trade_stops_level,
+                    sym.trade_freeze_level)
+            and min(sym.point, sym.trade_tick_size, sym.trade_tick_value, sym.volume_min,
+                    sym.volume_step) > 0
+            and sym.volume_max >= sym.volume_min
+            and min(sym.trade_stops_level, sym.trade_freeze_level) >= 0,
+            "Broker symbol metadata is missing or invalid",
+        )
         c.require("symbol", proposal.symbol == sym.name, "Proposal symbol differs from snapshot")
         c.require("side", proposal.side in ("long", "short"), "Side must be 'long' or 'short'")
 
@@ -248,15 +287,20 @@ class ExecutionValidatorAgent:
                     ctx.signal_max_age_seconds, ctx.broker_loss_tolerance)
             and min(proposal.entry_price, proposal.stop_price, proposal.target_price,
                     proposal.volume) > 0
-            and ctx.cost_per_lot >= 0,
-            "Proposal and quote numbers must be finite and positive",
+            and ctx.cost_per_lot >= 0
+            and ctx.signal_max_age_seconds > 0
+            and 0 <= ctx.broker_loss_tolerance <= _MAX_BROKER_LOSS_TOLERANCE,
+            "Proposal, quote and tolerance numbers must be finite and within range",
         )
         times_ok = c.require(
             "timestamps",
             _aware(ctx.now, ctx.quote_time, proposal.signal_bar_close_time, proposal.created_at),
             "Timestamps are missing or not timezone-aware",
         )
-        if not numbers_ok or not times_ok or proposal.side not in ("long", "short"):
+        if (
+            not numbers_ok or not times_ok or not symbol_ok
+            or proposal.side not in ("long", "short")
+        ):
             return c.verdict(self.name)
         assert ctx.quote_time is not None
 
@@ -319,11 +363,22 @@ class ExecutionValidatorAgent:
             and is_multiple_of(proposal.volume, sym.volume_step),
             "Volume violates broker min/max/step",
         )
-        min_distance = max(sym.trade_stops_level, sym.trade_freeze_level, 0) * sym.point
+        # Brokers measure stops/freeze levels from the price the position would
+        # close at (bid for a long, ask for a short). Require the distance from
+        # both that quote and the entry, in exact decimal arithmetic.
+        min_distance = (
+            Decimal(max(sym.trade_stops_level, sym.trade_freeze_level))
+            * Decimal(str(sym.point))
+        )
+        closing_quote = ctx.bid if proposal.side == "long" else ctx.ask
+        sign = 1 if proposal.side == "long" else -1
         c.require(
             "stop_distance",
-            abs(proposal.entry_price - proposal.stop_price) >= min_distance
-            and abs(proposal.target_price - proposal.entry_price) >= min_distance,
+            all(
+                sign * _distance(anchor, proposal.stop_price) >= min_distance
+                and sign * _distance(proposal.target_price, anchor) >= min_distance
+                for anchor in (proposal.entry_price, closing_quote)
+            ),
             "Stop or target is inside the broker stops/freeze level",
         )
 
@@ -340,7 +395,7 @@ class ExecutionValidatorAgent:
             local_loss = (ticks * sym.trade_tick_value + ctx.cost_per_lot) * proposal.volume
             worst_loss = local_loss
             broker = ctx.broker_loss_estimate
-            if ctx.mode in _BROKER_CONNECTED_MODES or broker is not None:
+            if _needs_broker_data(ctx.mode) or broker is not None:
                 broker_ok = c.require(
                     "broker_loss_cross_check",
                     broker is not None and _finite(broker) and broker > 0,
@@ -366,16 +421,19 @@ class ExecutionValidatorAgent:
 
 
 class DualAgentReview:
-    """Runs the agents and requires unanimous approval from at least two."""
+    """Runs both core agents and requires unanimous approval.
 
-    def __init__(self, agents: Sequence[ReviewAgent] | None = None) -> None:
+    The risk analyst and the execution validator are always instantiated here
+    and cannot be replaced or removed. ``extra_agents`` can only add vetoes.
+    """
+
+    def __init__(self, extra_agents: Sequence[ReviewAgent] = ()) -> None:
         self._agents: tuple[ReviewAgent, ...] = (
-            tuple(agents) if agents is not None
-            else (RiskAnalystAgent(), ExecutionValidatorAgent())
+            RiskAnalystAgent(), ExecutionValidatorAgent(), *extra_agents,
         )
         names = [agent.name for agent in self._agents]
-        if len(self._agents) < 2 or len(set(names)) != len(names):
-            raise ValueError("Dual review requires at least two distinctly named agents")
+        if len(set(names)) != len(names):
+            raise ValueError("Extra agents must have names distinct from the core agents")
 
     def review(self, proposal: TradeProposal, ctx: ReviewContext) -> ReviewDecision:
         verdicts: list[AgentVerdict] = []
@@ -388,7 +446,9 @@ class DualAgentReview:
                 )
             verdicts.append(verdict)
         decision = ReviewDecision(
-            approved=all(v.approved and not v.reasons for v in verdicts),
+            approved=len(verdicts) >= 2 and all(
+                v.approved is True and not v.reasons for v in verdicts
+            ),
             mode=ctx.mode,
             proposal=proposal,
             verdicts=tuple(verdicts),

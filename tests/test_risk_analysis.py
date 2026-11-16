@@ -59,6 +59,8 @@ def test_only_wins():
 @pytest.mark.parametrize(("pnls", "kwargs"), [
     ([], {}), ([1.0, math.nan], {}), ([1.0], {"starting_equity": 0}),
     ([1.0], {"drawdown_limit_pct": 0}), ([1.0], {"simulations": 0}),
+    ([1.0], {"starting_equity": math.nan}), ([1.0], {"starting_equity": math.inf}),
+    ([1.0], {"drawdown_limit_pct": math.nan}),
 ])
 def test_invalid_inputs(pnls, kwargs):
     params = {"starting_equity": 1_000, "drawdown_limit_pct": 3, **kwargs}

@@ -107,6 +107,8 @@ def test_healthy_state_is_allowed():
     ({"current_equity": math.nan}, "Equity state"),
     ({"peak_equity": math.inf}, "Equity state"),
     ({"current_equity": 10_500}, "Contradictory"),
+    ({"day_start_equity": 10_050}, "Contradictory"),
+    ({"paused": None}, "pause state is unknown"),
     ({"trades_today": -1}, "counters"),
 ])
 def test_each_gate_rejects(overrides, message):
@@ -124,6 +126,7 @@ def test_all_violations_are_reported_together():
     {"max_spread_price": 0.5, "max_risk_per_trade_pct": 2.0},  # above daily limit
     {"max_spread_price": 0.5, "max_daily_loss_pct": 5.0},  # above total drawdown
     {"max_spread_price": 0.5, "max_open_positions": 0},
+    {"max_spread_price": 0.5, "max_open_positions": 1.5},
     {"max_spread_price": 0.5, "max_margin_usage_pct": 101},
 ])
 def test_incoherent_limits_are_rejected(kwargs):

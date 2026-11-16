@@ -88,8 +88,10 @@ def run_backtest(
         )
     if min(spread, slippage, commission_per_lot) < 0:
         raise ValueError("execution costs cannot be negative")
-    if max_holding_bars is not None and max_holding_bars < 1:
-        raise ValueError("max_holding_bars must be at least 1")
+    if max_holding_bars is not None and (
+        not isinstance(max_holding_bars, int) or max_holding_bars < 1
+    ):
+        raise ValueError("max_holding_bars must be an integer of at least 1")
 
     half_cost = spread / 2 + slippage
     last = len(bars) - 1

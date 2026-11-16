@@ -61,6 +61,8 @@ def analyze_trades(
         raise ValueError("At least one trade is required")
     if not np.isfinite(pnl).all():
         raise ValueError("Trade results must be finite numbers")
+    if not (np.isfinite(starting_equity) and np.isfinite(drawdown_limit_pct)):
+        raise ValueError("starting_equity and drawdown_limit_pct must be finite")
     if starting_equity <= 0 or not 0 < drawdown_limit_pct < 100:
         raise ValueError("starting_equity must be positive and 0 < drawdown_limit_pct < 100")
     if simulations < 1 or min_trades < 1:

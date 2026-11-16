@@ -113,6 +113,7 @@ def test_one_position_at_a_time_and_metrics():
     {"stop_distance": 0}, {"stop_distance": 1, "spread": -0.1},
     {"stop_distance": 1, "volume": math.nan}, {"stop_distance": 1, "max_holding_bars": 0},
     {"stop_distance": 1, "price_unit_value": 0},
+    {"stop_distance": 1, "max_holding_bars": math.nan},
 ])
 def test_invalid_parameters(kwargs):
     with pytest.raises(ValueError):

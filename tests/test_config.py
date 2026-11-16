@@ -40,6 +40,7 @@ def test_example_blocks_trading_until_spread_limit_is_set(tmp_path):
     lambda d: d["risk"].update(enabled=False),
     lambda d: d["risk"].update(max_risk_per_trade_pct=5),
     lambda d: d["risk"].update(max_spread_price=-1),
+    lambda d: d["risk"].update(max_risk_per_trade_pct=1.0, max_daily_loss_pct=0.5),
     lambda d: d["risk"].update(martingale_multiplier=2),
     lambda d: d["strategy"].update(use_closed_candles_only=False),
     lambda d: d["strategy"].update(ema_fast=50),

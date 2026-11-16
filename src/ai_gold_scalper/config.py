@@ -57,6 +57,14 @@ class RiskSettings(_Strict):
     # Price units, from the broker's real spread behaviour. No universal default.
     max_spread_price: float | None = Field(default=None, gt=0)
 
+    @model_validator(mode="after")
+    def _coherent(self) -> RiskSettings:
+        if not (
+            self.max_risk_per_trade_pct <= self.max_daily_loss_pct <= self.max_total_drawdown_pct
+        ):
+            raise ValueError("Require per-trade <= daily loss <= total drawdown limits")
+        return self
+
 
 class ExecutionSettings(_Strict):
     allow_new_orders: bool = False

@@ -128,8 +128,9 @@ class RiskLimits:
             raise ValueError("Require 0 < max_risk_per_trade_pct <= max_daily_loss_pct")
         if not self.max_daily_loss_pct <= self.max_total_drawdown_pct < 100:
             raise ValueError("Require max_daily_loss_pct <= max_total_drawdown_pct < 100")
-        if min(self.max_consecutive_losses, self.max_trades_per_day, self.max_open_positions) < 1:
-            raise ValueError("Count limits must be at least 1")
+        counts = (self.max_consecutive_losses, self.max_trades_per_day, self.max_open_positions)
+        if not all(isinstance(v, int) and not isinstance(v, bool) and v >= 1 for v in counts):
+            raise ValueError("Count limits must be integers of at least 1")
         if self.max_spread_price <= 0 or self.max_quote_age_seconds <= 0:
             raise ValueError("Spread and quote-age limits must be positive")
         if self.min_reward_risk <= 0 or not 0 < self.max_margin_usage_pct <= 100:
@@ -154,15 +155,15 @@ class RiskState:
 def risk_gate_violations(limits: RiskLimits, state: RiskState) -> tuple[str, ...]:
     """Return every violated account-level gate; an empty tuple means allowed."""
     reasons: list[str] = []
-    if state.paused:
-        reasons.append("Trading is paused (kill switch)")
+    if state.paused is not False:  # unknown kill-switch state blocks trading
+        reasons.append("Trading is paused (kill switch) or pause state is unknown")
 
     equities = (state.day_start_equity, state.peak_equity, state.current_equity)
     if not all(_is_finite_number(v) and v > 0 for v in equities):
         reasons.append("Equity state must be finite and positive")
     else:
-        if state.current_equity > state.peak_equity:
-            reasons.append("Contradictory equity state: current equity above recorded peak")
+        if max(state.current_equity, state.day_start_equity) > state.peak_equity:
+            reasons.append("Contradictory equity state: equity above recorded peak")
         if state.current_equity <= state.day_start_equity * (1 - limits.max_daily_loss_pct / 100):
             reasons.append("Daily loss limit reached")
         if state.current_equity <= state.peak_equity * (1 - limits.max_total_drawdown_pct / 100):

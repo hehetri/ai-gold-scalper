@@ -84,7 +84,7 @@ def test_one_veto_is_enough():
     ({}, {"state": replace(STATE, current_equity=9_910)}, "risk_analyst", "daily loss"),
     ({}, {"required_margin": 6_000.0, "free_margin": 10_000.0}, "risk_analyst", "Margin"),
     ({}, {"required_margin": 100.0}, "risk_analyst", "Margin"),
-    ({}, {"mode": "live", "allow_new_orders": True}, "execution_validator", "Live trading"),
+    ({}, {"mode": "live", "allow_new_orders": True}, "execution_validator", "live trading is not approved"),
     ({}, {"mode": "demo"}, "execution_validator", "allow_new_orders"),
     ({"symbol": "XAUUSD"}, {}, "execution_validator", "symbol"),
     ({}, {"quote_time": None}, "execution_validator", "Timestamps"),
@@ -140,9 +140,9 @@ def test_agent_exception_is_a_veto():
         def review(self, proposal, ctx):
             raise RuntimeError("boom")
 
-    decision = DualAgentReview([RiskAnalystAgent(), Broken()]).review(PROPOSAL, CTX)
+    decision = DualAgentReview([Broken()]).review(PROPOSAL, CTX)
     assert not decision.approved
-    assert "Agent error" in decision.verdicts[1].reasons[0]
+    assert "Agent error" in decision.verdicts[2].reasons[0]
 
 
 def test_inconsistent_verdict_cannot_approve():
@@ -152,15 +152,95 @@ def test_inconsistent_verdict_cannot_approve():
         def review(self, proposal, ctx):
             return AgentVerdict(self.name, True, ("but something is wrong",), ())
 
-    assert not DualAgentReview([RiskAnalystAgent(), Sloppy()]).review(PROPOSAL, CTX).approved
+    assert not DualAgentReview([Sloppy()]).review(PROPOSAL, CTX).approved
 
 
-def test_requires_two_distinct_agents():
+def test_core_agents_cannot_be_replaced_or_duplicated():
+    class YesMan:
+        name = "yes_man"
+
+        def review(self, proposal, ctx):
+            return AgentVerdict(self.name, True, (), ("nothing",))
+
+    oversized = replace(PROPOSAL, volume=0.20)
+    decision = DualAgentReview([YesMan()]).review(oversized, CTX)
+    assert not decision.approved
+    assert [v.agent for v in decision.verdicts][:2] == ["risk_analyst", "execution_validator"]
+
+    renamed = RiskAnalystAgent()
+    renamed.name = "x"
+    misaligned = replace(PROPOSAL, stop_price=2298.205)
+    assert not DualAgentReview([renamed]).review(misaligned, CTX).approved
+
+    for duplicate in (RiskAnalystAgent(), ExecutionValidatorAgent()):
+        with pytest.raises(ValueError):
+            DualAgentReview([duplicate])
     with pytest.raises(ValueError):
-        DualAgentReview([RiskAnalystAgent()])
-    with pytest.raises(ValueError):
-        DualAgentReview([RiskAnalystAgent(), RiskAnalystAgent()])
-    DualAgentReview([RiskAnalystAgent(), ExecutionValidatorAgent()])
+        DualAgentReview([YesMan(), YesMan()])
+
+
+@pytest.mark.parametrize("mode", ["LIVE", "Live", "real", "demo ", "Demo", "", None, 1])
+def test_unknown_modes_fail_closed(mode):
+    full = replace(CTX, mode=mode, allow_new_orders=True, broker_loss_estimate=20.0,
+                   required_margin=230.0, free_margin=10_000.0)
+    decision = review(ctx=full)
+    assert not decision.approved
+    assert any("not approved" in r for r in decision.reasons)
+    # Without broker data an unknown mode is also treated as broker-connected.
+    assert vetoing(review(ctx=replace(CTX, mode=mode))) == {
+        "risk_analyst", "execution_validator"
+    }
+
+
+@pytest.mark.parametrize("value", [None, math.nan, 1, "yes"])
+def test_non_boolean_flags_fail_closed(value):
+    assert not review(ctx=replace(CTX, state=replace(STATE, paused=value))).approved
+    demo = replace(CTX, mode="demo", allow_new_orders=value, broker_loss_estimate=20.0,
+                   required_margin=230.0, free_margin=10_000.0)
+    assert not review(ctx=demo).approved
+
+
+def test_projected_floors_use_the_worse_broker_estimate():
+    # Local loss 20.0 keeps equity at 9900.5 (floor 9900); broker 20.9 does not.
+    near_floor = replace(CTX, state=replace(STATE, current_equity=9_920.5))
+    assert review(ctx=near_floor).approved
+    decision = review(ctx=replace(near_floor, broker_loss_estimate=20.9))
+    assert "risk_analyst" in vetoing(decision)
+    assert any("daily loss" in r for r in decision.reasons)
+
+
+@pytest.mark.parametrize("tolerance", [0.11, 0.5, 1e9, -0.01, math.nan])
+def test_broker_tolerance_is_capped(tolerance):
+    ctx = replace(CTX, broker_loss_estimate=20.0, broker_loss_tolerance=tolerance)
+    assert vetoing(review(ctx=ctx)) == {"execution_validator"}
+
+
+def test_stops_level_is_measured_from_the_closing_quote():
+    # Stops level 0.20. Long stop 0.30 under entry (ask) but only 0.10 under bid.
+    long = replace(PROPOSAL, stop_price=2299.90, target_price=2300.60, volume=0.01)
+    assert vetoing(review(long)) == {"execution_validator"}
+    short = replace(PROPOSAL, side="short", entry_price=2300.00, stop_price=2300.30,
+                    target_price=2299.60, volume=0.01)
+    assert vetoing(review(short)) == {"execution_validator"}
+
+
+def test_stop_exactly_on_stops_level_is_accepted():
+    # Zero spread so entry and closing quote coincide; 0.20 == 20 points exactly.
+    ctx = replace(CTX, bid=2300.20, state=replace(STATE, spread_price=0.0))
+    exact = replace(PROPOSAL, stop_price=2300.00, target_price=2300.40, volume=0.01)
+    assert review(exact, ctx).approved
+    inside = replace(PROPOSAL, stop_price=2300.01, target_price=2300.40, volume=0.01)
+    assert not review(inside, ctx).approved
+
+
+@pytest.mark.parametrize("changes", [
+    {"point": 0.0}, {"point": -0.01}, {"point": math.inf},
+    {"trade_freeze_level": math.nan}, {"trade_stops_level": -5},
+    {"trade_tick_value": math.nan}, {"volume_step": 0.0},
+])
+def test_invalid_symbol_metadata_is_vetoed(changes):
+    decision = review(ctx=replace(CTX, symbol=replace(SYMBOL, **changes)))
+    assert "execution_validator" in vetoing(decision)
 
 
 def test_decision_is_logged_as_json_audit_record(caplog):
